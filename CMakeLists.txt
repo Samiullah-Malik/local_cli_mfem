@@ -75,6 +75,7 @@ if(SIMMODSUITE_SimAdvMeshing_FOUND)
   setup_exe(pumi_2_mfem pumi_2_mfem.cc)
   setup_exe(read_pumi_mesh read_pumi_mesh.cc)
   setup_exe(testNedelecFieldTransfer testNedelecFieldTransfer.cc)
+  setup_exe(mfem_ex3p mfem_ex3p.cc)
 endif()
 
 bob_end_package()
