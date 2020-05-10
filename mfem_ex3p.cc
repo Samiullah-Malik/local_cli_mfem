@@ -28,6 +28,7 @@ using namespace mfem;
 
 void E_exact(const Vector &, Vector &);
 void f_exact(const Vector &, Vector &);
+void pumiUserFunction(const apf::Vector3& x, apf::Vector3& f);
 double freq = 1.0, kappa;
 int dim;
 double alpha = 0.25;  double beta = 2.0;
@@ -232,8 +233,35 @@ int main(int argc, char *argv[])
   // 15. Field Transfer from MFEM to PUMI.
   pmesh->NedelecFieldMFEMtoPUMI(pumi_mesh, &x, nedelecField);
 
-  // 16. Equilibrate Residuals Method
-  em::equilibrateResiduals(nedelecField);
+  // 16. Equilibration of Residuals Method
+  apf::Field* g = em::equilibrateResiduals(nedelecField);
+  apf::Field* correctedFluxField = em::computeFluxCorrection(nedelecField, g);
+
+  cout << "======== G Field =========" << endl;
+  apf::MeshEntity* face;
+  apf::MeshIterator* it = apf::getMesh(g)->begin(2);
+  while ((face = apf::getMesh(g)->iterate(it))) {
+    double components[3];
+    apf::getComponents(g, face, 0, components);
+    for (int i = 0; i < 3; i++) {
+      cout << components[i] << " ";
+    }
+    cout << endl;
+  }
+  apf::getMesh(g)->end(it);
+
+  cout << "======== Flux Corrected Field =========" << endl;
+  it = apf::getMesh(g)->begin(2);
+  while ((face = apf::getMesh(correctedFluxField)->iterate(it))) {
+    double components[3];
+    apf::getComponents(correctedFluxField, face, 0, components);
+    for (int i = 0; i < 3; i++) {
+      cout << components[i] << " ";
+    }
+    cout << endl;
+  }
+  apf::getMesh(correctedFluxField)->end(it);
+
   // 16. Perform Error Estimation
 
   // 17. Perform Mesh Adapt
@@ -295,4 +323,21 @@ void f_exact(const Vector &x, Vector &f)
       f(1) = (1. + kappa * kappa) * sin(kappa * x(0));
       if (x.Size() == 3) { f(2) = 0.0; }
    }
+}
+
+// TODO
+void pumiUserFunction(const apf::Vector3& x, apf::Vector3& f)
+{
+  if (dim == 3)
+  {
+      f[0] = (1. + kappa * kappa) * sin(kappa * x[1]);
+      f[1] = (1. + kappa * kappa) * sin(kappa * x[2]);
+      f[2] = (1. + kappa * kappa) * sin(kappa * x[0]);
+  }
+  else
+  {
+     f[0] = (1. + kappa * kappa) * sin(kappa * x[1]);
+     f[1] = (1. + kappa * kappa) * sin(kappa * x[0]);
+     f[2] = 0.0;
+  }
 }
