@@ -1,10 +1,8 @@
 //
-// Sample run:   ./testNedelecMFEMPUMI -p ../pumi-meshes/cube/cube.dmg  -m ../pumi-meshes/cube/pumi11/cube.smb -o order
+// Sample run:     /testNedelecFieldTransfer -p ../pumi-meshes/cube/cube.dmg  -m ../pumi-meshes/cube/pumi11/cube.smb -o 4
 //
-// Description:  The purpose of this example is to read a PUMI mesh and  model
-//               and create an MFEM mesh object. Then, define variable order
-//               Nedelec Fields on it. Check if fields on MFEM and PUMI match
-//               when evaluated at a certain xi coordinate of an element.
+// Descripti on:  The purpose of this example is to test if a Nedelec Field is successfully
+//                transferred from MFEM to PUMI.
 
 #include "mfem.hpp"
 #include <fstream>
