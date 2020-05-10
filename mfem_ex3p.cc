@@ -1,6 +1,7 @@
 //                                MFEM Example 3 - Electromagnetic (Parallel)
 //
 // Sample run:   ./read_pumi_mesh -p ../pumi-meshes/cube/cube.dmg  -m ../pumi-meshes/cube/pumi11/cube.smb
+//               ./mfem_ex3p -m /users/maliks2/Meshes/MaxwellMeshes/Fichera/coarse/fichera.smb -p /users/maliks2/Meshes/MaxwellMeshes/Fichera/fichera.x_t -o 1 > out3
 //
 // Description:  The purpose of this example is to execute Maxwell Problem in MFEM and transfer the Electric Field
 //               to PUMI field.
