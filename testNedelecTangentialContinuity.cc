@@ -23,9 +23,20 @@
 #include <gmi_mesh.h>
 #include <crv.h>
 
+
+#include <mthQR.h>
+#include <mth.h>
+#include <mth_def.h>
+
 using namespace std;
 using namespace mfem;
 
+apf::MeshEntity* getTetOppVert(
+    apf::Mesh* m, apf::MeshEntity* t, apf::MeshEntity* f);
+apf::Vector3 computeFaceOutwardNormal(apf::Mesh* m,
+    apf::MeshEntity* t, apf::MeshEntity* f, apf::Vector3 const& p);
+apf::Vector3 computeFaceNormal(apf::Mesh* m,
+    apf::MeshEntity* f, apf::Vector3 const& p);
 
 int main(int argc, char *argv[])
 {
@@ -96,6 +107,7 @@ int main(int argc, char *argv[])
   FiniteElementSpace *fespace = new FiniteElementSpace(mesh, fec);
 
   // 4. Test Tangential Continuity of Nedelec Vector Shape Functions
+  cout << "MFEM MESH" << endl;
   for (int i = 0; i < mesh->GetNFaces(); i++) {
     FaceElementTransformations* trans = mesh->GetFaceElementTransformations(i);
 
@@ -145,7 +157,7 @@ int main(int argc, char *argv[])
 
       cout <<"Tangential Components of Element 1 Shape Functions" << endl;
       shapes_tangent.Print(cout, dim);
-      cout << "===================" << endl;
+      cout << "=================================================" << endl;
 
       // elem2no
       IntegrationPoint eip2;
@@ -183,11 +195,161 @@ int main(int argc, char *argv[])
 
       cout <<"Tangential Components of Element 2 Shape Functions" << endl;
       shapes_tangent.Print(cout, dim);
+      cout << "=================================================" << endl;
+      cout << "=================================================" << endl;
       cout << endl;
 
       break;
     }
   }
+
+  // 5. Create Nedelec Field on PUMI mesh.
+  apf::Field* nedelecField = apf::createField(
+              pumi_mesh, "nedelec_field", apf::SCALAR, apf::getNedelec(order));
+  apf::zeroField(nedelecField);
+  apf::FieldShape* nedelecFieldShape = nedelecField->getShape();
+
+  // 6. Test Tangential Continuity of Nedelec Vector Shape Functions on PUMI
+  //    mesh.
+  cout << "PUMI MESH" << endl;
+  apf::MeshEntity* face;
+  apf::MeshIterator* it;
+  it = pumi_mesh->begin(2);
+  while ( face = pumi_mesh->iterate(it) ) {
+
+    apf::Up up;
+    pumi_mesh->getUp(face, up);
+    if (up.n == 2) {
+
+      // elem1
+      apf::MeshEntity* tet1 = up.e[0];
+      apf::Vector3 xi = apf::Vector3(1./3., 1./3., 0.);
+
+      apf::MeshElement* me1 = apf::createMeshElement(pumi_mesh, tet1);
+      apf::Element* el1 = apf::createElement(nedelecField, me1);
+
+      int type = pumi_mesh->getType(tet1);
+      int nd = apf::countElementNodes(nedelecFieldShape, type);
+      int dim = apf::getDimension(pumi_mesh, tet1);
+      apf::NewArray<apf::Vector3> vectorshapes1 (nd);
+
+      apf::Vector3 tet1xi = apf::boundaryToElementXi(pumi_mesh, face, tet1, xi);
+      apf::getVectorShapeValues(el1, tet1xi, vectorshapes1);
+      mth::Matrix<double> vectorShapes1 (nd, dim);
+      for (int j = 0; j < nd; j++)
+        for (int k = 0; k < dim; k++)
+          vectorShapes1(j,k) = vectorshapes1[j][k];
+
+      apf::destroyElement(el1);
+      apf::destroyMeshElement(me1);
+
+      apf::Vector3 n1 = computeFaceOutwardNormal(pumi_mesh, tet1, face, xi);
+      mth::Vector<double> nor1 (3);
+      nor1(0) = n1[0]; nor1(1) = n1[1]; nor1(2) = n1[2];
+
+      apf::Downward edges;
+      int ne = pumi_mesh->getDownward(tet1, 1, edges);
+      int which, rotate; bool flip;
+      for (int i = 0; i < ne; i++) {
+        apf::getAlignment(pumi_mesh, tet1, edges[i], which, flip, rotate);
+        if (flip) {
+          for(int j = 0; j < dim; j++)
+            vectorShapes1(i,j) = -1*vectorShapes1(i,j);
+        }
+      }
+
+      // compute tangential components of element shape functions
+      mth::Vector<double> shapes_mult_normal;
+      mth::multiply(vectorShapes1, nor1, shapes_mult_normal);
+
+      mth::Matrix<double> shapes_normal (nd, dim);
+      shapes_normal.zero();
+
+      for (int i = 0; i < nd; i++) {
+        mth::Vector<double> shape_nc (dim);
+        shape_nc[0] = nor1[0]; shape_nc[1] = nor1[1]; shape_nc[2] = nor1[2];
+
+        shape_nc *= shapes_mult_normal(i);
+        shapes_normal(i, 0) = shape_nc[0];
+        shapes_normal(i, 1) = shape_nc[1];
+        shapes_normal(i, 2) = shape_nc[2];
+      }
+
+      mth::Matrix<double> shapes_tangent (nd, dim);
+      shapes_tangent.zero();
+      shapes_tangent += vectorShapes1;
+      shapes_tangent -= shapes_normal;
+
+      cout <<"Tangential Components of Element 1 Shape Functions" << endl;
+      cout << shapes_tangent << endl;
+      cout << "=================================================" << endl;
+      cout << endl;
+
+      // elem2
+      apf::MeshEntity* tet2 = up.e[1];
+
+      apf::MeshElement* me2 = apf::createMeshElement(pumi_mesh, tet2);
+      apf::Element* el2 = apf::createElement(nedelecField, me2);
+
+      type = pumi_mesh->getType(tet2);
+      nd = apf::countElementNodes(nedelecFieldShape, type);
+      apf::NewArray<apf::Vector3> vectorshapes2 (nd);
+
+      apf::Vector3 tet2xi = apf::boundaryToElementXi(pumi_mesh, face, tet2, xi);
+      apf::getVectorShapeValues(el2, tet2xi, vectorshapes2);
+      mth::Matrix<double> vectorShapes2 (nd, dim);
+      for (int j = 0; j < nd; j++)
+        for (int k = 0; k < dim; k++)
+          vectorShapes2(j,k) = vectorshapes2[j][k];
+
+      apf::destroyElement(el2);
+      apf::destroyMeshElement(me2);
+
+      apf::Vector3 n2 = computeFaceOutwardNormal(pumi_mesh, tet2, face, xi);
+      mth::Vector<double> nor2 (3);
+      nor2(0) = n2[0]; nor2(1) = n2[1]; nor2(2) = n2[2];
+
+
+      ne = pumi_mesh->getDownward(tet2, 1, edges);
+      for (int i = 0; i < ne; i++) {
+        apf::getAlignment(pumi_mesh, tet2, edges[i], which, flip, rotate);
+        if (flip) {
+          for(int j = 0; j < dim; j++)
+            vectorShapes2(i,j) = -1*vectorShapes2(i,j);
+        }
+      }
+
+      // compute tangential components of element shape functions
+      mth::multiply(vectorShapes2, nor2, shapes_mult_normal);
+
+      shapes_normal.zero();
+
+      for (int i = 0; i < nd; i++) {
+        mth::Vector<double> shape_nc (dim);
+        shape_nc[0] = nor2[0]; shape_nc[1] = nor2[1]; shape_nc[2] = nor2[2];
+
+        shape_nc *= shapes_mult_normal(i);
+        shapes_normal(i, 0) = shape_nc[0];
+        shapes_normal(i, 1) = shape_nc[1];
+        shapes_normal(i, 2) = shape_nc[2];
+      }
+
+      shapes_tangent.zero();
+      shapes_tangent += vectorShapes2;
+      shapes_tangent -= shapes_normal;
+
+      cout <<"Tangential Components of Element 2 Shape Functions" << endl;
+      cout << shapes_tangent << endl;
+      cout << "=================================================" << endl;
+      cout << endl;
+
+      break;
+    }
+  }
+  pumi_mesh->end(it);
+
+
+
 
    delete mesh;
 
@@ -205,3 +367,59 @@ int main(int argc, char *argv[])
    return 0;
 }
 
+apf::MeshEntity* getTetOppVert(
+    apf::Mesh* m, apf::MeshEntity* t, apf::MeshEntity* f)
+{
+  apf::Downward fvs;
+  int fnv = m->getDownward(f, 0, fvs);
+  apf::Downward tvs;
+  int tnv = m->getDownward(t, 0, tvs);
+  PCU_ALWAYS_ASSERT(tnv == 4 && fnv == 3);
+  for (int i = 0; i < tnv; i++) {
+    if (apf::findIn(fvs, fnv, tvs[i]) == -1)
+      return tvs[i];
+  }
+  return 0;
+}
+
+apf::Vector3 computeFaceNormal(apf::Mesh* m,
+    apf::MeshEntity* f, apf::Vector3 const& p)
+{
+  // Compute face normal using face Jacobian
+  apf::MeshElement* me = apf::createMeshElement(m, f);
+  apf::Matrix3x3 J;
+  apf::getJacobian(me, p, J);
+  apf::destroyMeshElement(me);
+
+  apf::Vector3 g1 = J[0];
+  apf::Vector3 g2 = J[1];
+  apf::Vector3 n = apf::cross( g1, g2 );
+  return n.normalize();
+}
+
+apf::Vector3 computeFaceOutwardNormal(apf::Mesh* m,
+    apf::MeshEntity* t, apf::MeshEntity* f, apf::Vector3 const& p)
+{
+  apf::Vector3 n = computeFaceNormal(m, f, p);
+
+  // Orient the normal outwards from the tet
+  apf::MeshEntity* oppVert = getTetOppVert(m, t, f);
+  apf::Vector3 vxi = apf::Vector3(0.,0.,0.);
+
+  // get global coordinates of the vertex
+  apf::Vector3 txi;
+  m->getPoint(oppVert, 0, txi);
+
+  // get global coordinates of the point on the face
+  apf::MeshElement* fme = apf::createMeshElement(m, f);
+  apf::Vector3 pxi;
+  apf::mapLocalToGlobal(fme, p, pxi);
+  apf::destroyMeshElement(fme);
+
+  apf::Vector3 pxiTotxi = txi - pxi;
+  //std::cout << "dot product " << pxiTotxi*n << std::endl;
+  if (pxiTotxi*n > 0) {
+    n = n*-1.;
+  }
+  return n;
+}
