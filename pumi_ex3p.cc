@@ -237,212 +237,16 @@ int main(int argc, char *argv[])
   pmesh->NedelecFieldMFEMtoPUMI(pumi_mesh, &x, nedelecField);
 
 
-  // 16. Equilibration of Residuals Method
-  apf::Field* g = em::equilibrateResiduals(nedelecField);
-  cout << "G Calculated" << endl;
+  // 16. Estimate Error - (Equilibration of Residuals Method)
+  apf::Field* residualErrorField = em::estimateError(nedelecField);
 
-  cout << "Start Flux Correction" << endl;
-  apf::Field* correctedFluxField = em::computeFluxCorrection(nedelecField, g);
-
-  // DEBUG
-  cout << "DEBUGGING GS AND THETAS" << endl;
-  bool debug = true;
-  if (debug) {
-    int elemNo = 0;
-    apf::MeshEntity* tet;
-    apf::MeshIterator* it = pumi_mesh->begin(3);
-    while ((tet = pumi_mesh->iterate(it))) {
-      cout << "At tet " << elemNo++ << endl;
-
-      apf::Downward tet_edges;
-      int nte = pumi_mesh->getDownward(tet, 1, tet_edges);
-
-      apf::Downward tet_faces;
-      int nf = pumi_mesh->getDownward(tet, 2, tet_faces);
-
-      for (int ff = 0; ff < nf; ff++) {
-        cout << "  Face " << ff << endl;
-        apf::MeshEntity* currentFace = tet_faces[ff];
-
-        apf::Downward face_edges;
-        int nfe = pumi_mesh->getDownward(currentFace, 1, face_edges);
-
-        cout << "    Face Edges Orientations ";
-        for (int i = 0; i < nfe; i++) {
-          int which, rotate; bool flip;
-          apf::getAlignment(
-              pumi_mesh, currentFace, face_edges[i], which, flip, rotate);
-          cout << flip << " ";
-        }
-        cout << endl;
-
-        std::vector<int> fei_in_tet;
-        for (int i = 0; i < nfe; i++) {
-          int fei = apf::findIn(tet_edges, nte, face_edges[i]);
-          fei_in_tet.push_back(fei);
-        }
-
-        double expected_gs[3];
-        apf::getComponents(g, currentFace, 0, expected_gs);
-        cout << "    expected gs (initial) ";
-        for (int i = 0; i < 3; i++) {
-          cout << expected_gs[i] << " ";
-        }
-        cout << endl;
-        cout << "    expected gs (negated) ";
-        for (int i = 0; i < 3; i++) {
-          int which, rotate; bool flip;
-          apf::getAlignment(
-              pumi_mesh, currentFace, face_edges[i], which, flip, rotate);
-          if (flip)
-            expected_gs[i] = -expected_gs[i];
-          cout << expected_gs[i] << " ";
-        }
-        cout << endl;
-
-
-        double theta_coeffs[3];
-        apf::getComponents(correctedFluxField, currentFace, 0, theta_coeffs);
-        cout << "theta coeffs " << theta_coeffs[0] << " " << theta_coeffs[1] <<
-          " " << theta_coeffs[2] << endl;
-
-
-
-        // compute integral on face
-        apf::FieldShape* fs = nedelecField->getShape();
-        int ftype = pumi_mesh->getType(currentFace);
-        int fnd = apf::countElementNodes(fs, ftype);
-        int fdim = apf::getDimension(pumi_mesh, currentFace);
-        int sdim = pumi_mesh->getDimension();
-        PCU_ALWAYS_ASSERT(ftype == apf::Mesh::TRIANGLE && fdim == 2);
-        double w;
-
-        int ttype = pumi_mesh->getType(tet);
-        int tnd = apf::countElementNodes(fs, ttype);
-        int tdim = apf::getDimension(pumi_mesh, tet);
-        PCU_ALWAYS_ASSERT(ttype == apf::Mesh::TET && tdim == 3);
-
-
-        apf::NewArray<apf::Vector3> trivectorshapes(fnd);
-        apf::NewArray<apf::Vector3> tetvectorshapes(tnd);
-        mth::Matrix<double> elmat (fnd, fnd);
-
-
-        apf::MeshElement* fme = apf::createMeshElement(pumi_mesh, currentFace);
-        apf::Element* fel = apf::createElement(nedelecField, fme);
-        int int_order = 2 * fs->getOrder();
-        int np = apf::countIntPoints(fme, int_order);
-
-        apf::MeshElement* tme = apf::createMeshElement(pumi_mesh, tet);
-        apf::Element* tel = apf::createElement(nedelecField, tme);
-
-        std::vector<double> computed_gs;
-        for (int edgeNo = 0; edgeNo < 3; edgeNo++) {
-          elmat.zero();
-          double integral = 0.0;
-          apf::Vector3 p;
-          for (int i = 0; i < np; i++) {
-            apf::getIntPoint(fme, int_order, i, p);
-            double weight = apf::getIntWeight(fme, int_order, i);
-            apf::Matrix3x3 J;
-            apf::getJacobian(fme, p, J);
-            double jdet = apf::getJacobianDeterminant(J, fdim);
-            w = weight * jdet;
-
-            apf::getVectorShapeValues(fel, p, trivectorshapes);
-            apf::getVectorShapeValues(tel, p, tetvectorshapes);
-
-            // eval theta vector
-            apf::Vector3 theta_vector;
-            theta_vector.zero();
-            for (int j = 0; j < 3; j++) {
-              theta_vector += trivectorshapes[j] * theta_coeffs[j];
-            }
-            cout << "theta vector " << theta_vector << endl;
-
-
-            integral +=
-              w * (theta_vector * trivectorshapes[edgeNo]);
-              //w * (theta_vector * tetvectorshapes[ fei_in_tet[edgeNo] ]);
-
-            // COMPUTE FACE MASS MATRIX HERE FOR CONFIRMATION
-            mth::Matrix<double> vectorShapes (fnd, sdim);
-            for (int k = 0; k < fnd; k++)
-              for (int l = 0; l < sdim; l++)
-                vectorShapes(k,l) = trivectorshapes[k][l];
-            //cout << "Face Tri Shapes" << endl;
-            //cout << vectorShapes << endl;
-            mth::Matrix<double> vectorShapesT (sdim, fnd);
-            mth::transpose(vectorShapes, vectorShapesT);
-            mth::Matrix<double> M (fnd,fnd);
-            M.zero();
-            mth::multiply(vectorShapes, vectorShapesT, M);
-            M *= w;
-            elmat += M;
-          }
-          computed_gs.push_back(integral);
-        }
-        cout << "face mass matrix" << endl;
-        cout << elmat << endl;
-
-        cout << "    computed gs           ";
-        for (int i = 0; i < 3; i++) {
-          cout << computed_gs[i] << " ";
-        }
-        cout << endl;
-        cout << "    expected gs           ";
-        for (int i = 0; i < 3; i++) {
-          cout << expected_gs[i] << " ";
-        }
-        cout << endl;
-        for (int i = 0; i < 3; i++) {
-          if (abs(computed_gs[i]-expected_gs[i]) < 1e-8)
-            cout << "success" << endl;
-          else
-            cout << "error" << endl;
-        }
-        cout << "==============================" << endl;
-      }
-      cout << "==============================" << endl;
-    }
-    pumi_mesh->end(it);
-  }
-
-  /*cout << "======== G Field =========" << endl;
-  apf::MeshEntity* face;
-  apf::MeshIterator* it = apf::getMesh(g)->begin(2);
-  while ((face = apf::getMesh(g)->iterate(it))) {
-    double components[3];
-    apf::getComponents(g, face, 0, components);
-    for (int i = 0; i < 3; i++) {
-      cout << components[i] << " ";
-    }
-    cout << endl;
-  }
-  apf::getMesh(g)->end(it);
-
-  cout << "======== Flux Corrected Field =========" << endl;
-  it = apf::getMesh(g)->begin(2);
-  while ((face = apf::getMesh(correctedFluxField)->iterate(it))) {
-    double components[3];
-    apf::getComponents(correctedFluxField, face, 0, components);
-    for (int i = 0; i < 3; i++) {
-      cout << components[i] << " ";
-    }
-    cout << endl;
-  }
-  apf::getMesh(correctedFluxField)->end(it);*/
-
-  
-  cout << "solve local bvp" << endl;
-  apf::Field* residualErrorField = em::emEstimateError(nedelecField, correctedFluxField);
   cout << "======== Error Field =========" << endl;
   apf::MeshEntity* tet;
-  apf::MeshIterator* it = apf::getMesh(g)->begin(3);
-  while ((tet = apf::getMesh(residualErrorField)->iterate(it))) {
+  apf::MeshIterator* it = pumi_mesh->begin(3);
+  while ((tet = pumi_mesh->iterate(it))) {
     cout << apf::getScalar(residualErrorField, tet, 0) << endl;
   }
-  apf::getMesh(residualErrorField)->end(it);
+  pumi_mesh->end(it);
 
 
 
@@ -546,30 +350,9 @@ int main(int argc, char *argv[])
   
 
 
-  // Print G Field Values to compare against MFEM
-  debug = false;
-  if (debug) {
-    cout << "BEGIN DEBUG" << endl;
-    int elemNo = 0;
-    apf::MeshEntity* tet;
-    apf::MeshIterator* it = pumi_mesh->begin(3);
-    while ((tet = pumi_mesh->iterate(it))) {
-      cout << "At tet " << elemNo << endl;
-      apf::Downward f;
-      int nf = pumi_mesh->getDownward(tet, 2, f);
-      for (int i = 0; i < nf; i++) {
-        double components[3];
-        apf::getComponents(g, f[i], 0, components);
-        cout << "face " << i << ": " << components[0] << " " << components[1] << " " << components[2] << endl;
-      }
-      elemNo++;
-    }
-    pumi_mesh->end(it);
-  }
 
+  apf::writeVtkFiles("error_Fields_pumi", pumi_mesh);
 
-
-  apf::writeVtkFiles("error_Fields_pumi", pumi_mesh); // Write all PUMI VTK Fields
   // 17. Perform Mesh Adapt
 
   delete pcg;
