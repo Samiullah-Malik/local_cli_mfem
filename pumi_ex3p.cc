@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 
+#include <lionPrint.h>
 #ifdef MFEM_USE_SIMMETRIX
 #include <SimUtil.h>
 #include <gmi_sim.h>
@@ -32,6 +33,9 @@ using namespace mfem;
 void E_exact(const Vector &, Vector &);
 void f_exact(const Vector &, Vector &);
 void pumiUserFunction(const apf::Vector3& x, apf::Vector3& f);
+double computeElementExactError(apf::Mesh* mesh, apf::MeshEntity* e,
+  apf::Field* f);
+
 double freq = 1.0, kappa;
 int dim;
 double alpha = 0.25;  double beta = 2.0;
@@ -85,6 +89,7 @@ int main(int argc, char *argv[])
 
   // 1. Read the SCOREC Mesh
   PCU_Comm_Init();
+  lion_set_verbosity(1);
 #ifdef MFEM_USE_SIMMETRIX
   //SimUtil_start();
   Sim_readLicenseFile(0);
@@ -295,8 +300,15 @@ int main(int argc, char *argv[])
   pumi_mesh->end(itr);
   cout << "Electric Fields Written" << endl;
 
-  // 18(b). Write exact error field // TODO
-
+  // 18(b). Write exact error field
+  itr = pumi_mesh->begin(3);
+  while ((ent = pumi_mesh->iterate(itr)))
+  {
+    double exact_element_error = computeElementExactError(
+        pumi_mesh, ent, nedelecField);
+    apf::setScalar(exactErrorField, ent, 0, exact_element_error);
+  }
+  pumi_mesh->end(itr);
 
   // 18(c). Convert Lagrange Constant Fields to Nodal Fields
   itr = pumi_mesh->begin(0);
@@ -310,20 +322,20 @@ int main(int argc, char *argv[])
     double exact_errors[ne];
     double residual_errors[ne];
     for (std::size_t i=0; i < ne; ++i){
-      //exact_errors[i] = apf::getScalar(exactErrorField, elements[i], 0);
+      exact_errors[i] = apf::getScalar(exactErrorField, elements[i], 0);
       residual_errors[i] = apf::getScalar(residualErrorField, elements[i], 0);
     }
 
     double exact_average = 0.0;
     double residual_average = 0.0;
     for(int i = 0; i < ne; i++){
-      //exact_average += exact_errors[i];
+      exact_average += exact_errors[i];
       residual_average += residual_errors[i];
     }
-    //exact_average = exact_average/ne;
+    exact_average = exact_average/ne;
     residual_average = residual_average/ne;
 
-    //apf::setScalar(exactErrorNodalField, ent, 0, exact_average);
+    apf::setScalar(exactErrorNodalField, ent, 0, exact_average);
     apf::setScalar(residualErrorNodalField, ent, 0, residual_average);
 
     // (ii). solution nodal fields (exact, FEM)
@@ -347,13 +359,33 @@ int main(int argc, char *argv[])
     apf::setVector(E_fem_nodal_Field, ent, 0, fem_field_avg);
   }
   cout << "Error Fields Written" << endl;
-  
 
 
 
+  apf::Field* sizefield = em::getTargetEMSizeField(
+      nedelecField, residualErrorField, 0.25, 2.0, 2);
   apf::writeVtkFiles("error_Fields_pumi", pumi_mesh);
 
   // 17. Perform Mesh Adapt
+  int index = 0;
+  while (pumi_mesh->countFields() > 1)
+  {
+    apf::Field* f = pumi_mesh->getField(index);
+    if (f == sizefield) {
+       index++;
+       continue;
+    }
+    pumi_mesh->removeField(f);
+    apf::destroyField(f);
+  }
+  pumi_mesh->verify();
+
+  ma::Input* erinput = ma::configure(pumi_mesh, sizefield);
+  erinput->shouldFixShape = true;
+  erinput->maximumIterations = 10;
+  ma::adapt(erinput);
+  pumi_mesh->writeNative("after_adapt_pumi.smb");
+
 
   delete pcg;
   delete ams;
@@ -428,85 +460,46 @@ void pumiUserFunction(const apf::Vector3& x, apf::Vector3& f)
   }
 }
 
-/*
+
 double computeElementExactError(apf::Mesh* mesh, apf::MeshEntity* e,
-  apf::Field* f, mth::Vector<double> const error_dofs)                              
-{                                                                                   
-  double error = 0.0;                                                               
-                                                                                    
-  apf::FieldShape* fs = f->getShape();                                              
-  int type = mesh->getType(e);                                                      
-  PCU_ALWAYS_ASSERT(type == apf::Mesh::TET);                                        
-  int nd = apf::countElementNodes(fs, type);                                        
-  int dim = apf::getDimension(mesh, e);                                             
-  double w;                                                                         
-                                                                                    
-  apf::MeshElement* me = apf::createMeshElement(mesh, e);                           
-  apf::Element* el = apf::createElement(f, me);                                     
-  int order = 2 * fs->getOrder();                                                   
-  int np = apf::countIntPoints(me, order);                                          
-                                                                                    
-  apf::NewArray<apf::Vector3> vectorshape(nd);                                      
-                                                                                    
-  apf::Vector3 p;                                                                   
-  for (int i = 0; i < np; i++) {                                                    
-    apf::getIntPoint(me, order, i, p);                                              
-    double weight = apf::getIntWeight(me, order, i);                                
-    apf::Matrix3x3 J;                                                               
-    apf::getJacobian(me, p, J);                                                     
-    double jdet = apf::getJacobianDeterminant(J, dim);                              
-    w = weight * jdet;                                                              
-                                                                                    
-    apf::getVectorShapeValues(el, p, vectorshape);                                  
-    // TODO take care of negative dof values                                        
-    mth::Matrix<double> vectorShape (nd, dim);                                      
-    for (int j = 0; j < nd; j++)                                                    
-      for (int k = 0; k < dim; k++)                                                 
-        vectorShape(j,k) = vectorshape[j][k];                                       
-                                                                                    
-    mth::Matrix<double> vectorShapeT (dim, nd);                                     
-    mth::transpose(vectorShape, vectorShapeT);                                      
-                                                                                    
-    mth::Vector<double> err_func;                                                   
-    mth::multiply(vectorShapeT, error_dofs, err_func);                              
-                                                                                    
-    error += w * (err_func * err_func);                                             
-  }                                                                                 
-  if (error < 0.0)                                                                  
-    error = -error;                                                                 
-                                                                                    
-  return sqrt(error);                                                               
-}
-
-
-
-double computeExactElementError(int elemNo, VectorCoefficient &exsol, Mesh* mesh,
-                                  FiniteElementSpace* fespace, GridFunction x)
+  apf::Field* f)
 {
   double error = 0.0;
-  const FiniteElement *fe = fespace->GetFE(elemNo);
-  int intorder = 2*fe->GetOrder() + 1;
-  ElementTransformation* eltr = fespace->GetElementTransformation(elemNo);
-  const IntegrationRule *ir = &IntRules.Get(fe->GetGeomType(), intorder);
-  DenseMatrix vals, exact_vals;
-  Vector loc_errs;
 
-  x.GetVectorValues(*eltr, *ir, vals);
-  exsol.Eval(exact_vals, *eltr, *ir);
-  vals -= exact_vals;
-  loc_errs.SetSize(vals.Width());
-  vals.Norm2(loc_errs); 
- 
-  for (int j = 0; j < ir->GetNPoints(); j++)
-  {
-    const IntegrationPoint &ip = ir->IntPoint(j);
-    eltr->SetIntPoint(&ip);
-    error += ip.weight * eltr->Weight() * (loc_errs(j) * loc_errs(j));
+  apf::FieldShape* fs = f->getShape();
+  int type = mesh->getType(e);
+  PCU_ALWAYS_ASSERT(type == apf::Mesh::TET);
+  int nd = apf::countElementNodes(fs, type);
+  int dim = apf::getDimension(mesh, e);
+  double w;
+
+  apf::MeshElement* me = apf::createMeshElement(mesh, e);
+  apf::Element* el = apf::createElement(f, me);
+  int order = 2*fs->getOrder() + 1;
+  int np = apf::countIntPoints(me, order);
+
+  apf::Vector3 femsol, exsol;
+
+  apf::Vector3 p;
+  for (int i = 0; i < np; i++) {
+    apf::getIntPoint(me, order, i, p);
+    double weight = apf::getIntWeight(me, order, i);
+    apf::Matrix3x3 J;
+    apf::getJacobian(me, p, J);
+    double jdet = apf::getJacobianDeterminant(J, dim);
+    w = weight * jdet;
+
+    apf::getVector(el, p, femsol);
+
+    apf::Vector3 global;
+    apf::mapLocalToGlobal(me, p, global);
+    pumiUserFunction(global, exsol);
+    apf::Vector3 diff = exsol - femsol;
+
+    error += w * (diff * diff);
   }
   if (error < 0.0)
-  {
-    return -sqrt(-error);
-  }
-  return sqrt(error);
-}*/
+    error = -error;
 
+  return sqrt(error);
+}
