@@ -32,13 +32,12 @@ using namespace mfem;
 
 void E_exact(const Vector &, Vector &);
 void f_exact(const Vector &, Vector &);
-void pumiUserFunction(const apf::Vector3& x, apf::Vector3& f);
-double computeElementExactError(apf::Mesh* mesh, apf::MeshEntity* e,
-  apf::Field* f);
 
 double freq = 1.0, kappa;
 int dim;
-double alpha = 0.25;  double beta = 2.0;
+double alpha = 0.25;
+double beta = 2.0;
+int n_target = 2;
 
 int main(int argc, char *argv[])
 {
@@ -70,6 +69,12 @@ int main(int argc, char *argv[])
                  "Enable or disable GLVis visualization.");
   args.AddOption(&static_cond, "-sc", "--static-condensation", "-no-sc",
                  "--no-static-condensation", "Enable static condensation.");
+  args.AddOption(&alpha , "-a", "--alpha",
+                 "alpha");
+  args.AddOption(&beta , "-b", "--beta",
+                 "beta");
+  args.AddOption(&n_target , "-n", "--n_target",
+                 "n_target");
 
   args.Parse();
   if (!args.Good())
@@ -235,156 +240,16 @@ int main(int argc, char *argv[])
   }
 
   // 14. Create Nedelec Field on PUMI mesh.
-  apf::Field* nedelecField = apf::createField(
+  apf::Field* electric_field = apf::createField(
               pumi_mesh, "nedelec_field", apf::SCALAR, apf::getNedelec(order));
 
   // 15. Field Transfer from MFEM to PUMI.
-  pmesh->NedelecFieldMFEMtoPUMI(pumi_mesh, &x, nedelecField);
-
+  pmesh->NedelecFieldMFEMtoPUMI(pumi_mesh, &x, electric_field);
 
   // 16. Estimate Error - (Equilibration of Residuals Method)
-  apf::Field* residualErrorField = em::estimateError(nedelecField);
-
-  cout << "======== Error Field =========" << endl;
-  apf::MeshEntity* tet;
-  apf::MeshIterator* it = pumi_mesh->begin(3);
-  while ((tet = pumi_mesh->iterate(it))) {
-    cout << apf::getScalar(residualErrorField, tet, 0) << endl;
-  }
-  pumi_mesh->end(it);
-
-
-
-  // 18. Write Fields to PUMI
-  apf::Field* E_exact_Field = 0;
-  apf::Field* E_fem_Field = 0;
-  apf::Field* E_exact_nodal_Field = 0;
-  apf::Field* E_fem_nodal_Field = 0;
-  apf::Field* exactErrorField = 0;
-  // apf::Field* residualErrorField = 0 (defined above);
-  apf::Field* exactErrorNodalField = 0;
-  apf::Field* residualErrorNodalField = 0;
-
-  E_exact_Field = apf::createIPField(pumi_mesh, "E_exact_field", apf::VECTOR, 1);
-  E_fem_Field = apf::createIPField(pumi_mesh, "E_fem_field", apf::VECTOR, 1);
-  E_exact_nodal_Field = apf::createField(pumi_mesh, "E_exact_nodal_field", apf::VECTOR, apf::getLagrange(1));
-  E_fem_nodal_Field = apf::createField(pumi_mesh, "E_fem_nodal_field", apf::VECTOR, apf::getLagrange(1));
-  exactErrorField = apf::createIPField(pumi_mesh, "exact_error_field", apf::SCALAR, 1);
-  exactErrorNodalField = apf::createField(pumi_mesh, "exact_error_nodal_field", apf::SCALAR, apf::getLagrange(1));
-  residualErrorNodalField = apf::createField(pumi_mesh, "residual_error_nodal_field", apf::SCALAR, apf::getLagrange(1));
-
-  // 18(a). Write electric field (exact and FEM) to PUMI mesh
-  apf::MeshEntity* ent;
-  apf::MeshIterator* itr = pumi_mesh->begin(3);
-  while ((ent = pumi_mesh->iterate(itr)))  // iterate over all regions
-  {
-    apf::Vector3 c = apf::Vector3(1./3.,1./3.,1./3.);
-
-    apf::MeshElement* me = apf::createMeshElement(pumi_mesh, ent);
-    apf::Element* el = apf::createElement(nedelecField, me);
-
-    // write fem field (Vector)
-    apf::Vector3 vvalue;
-    apf::getVector(el, c, vvalue);
-    apf::setVector(E_fem_Field, ent, 0, vvalue);
-
-    // write exact field (Vector)
-    apf::Vector3 cg;
-    apf::mapLocalToGlobal(me, c, cg);
-    pumiUserFunction(cg, vvalue);
-    apf::setVector(E_exact_Field, ent, 0, vvalue);
-
-    apf::destroyElement(el);
-    apf::destroyMeshElement(me);
-  }
-  pumi_mesh->end(itr);
-  cout << "Electric Fields Written" << endl;
-
-  // 18(b). Write exact error field
-  itr = pumi_mesh->begin(3);
-  while ((ent = pumi_mesh->iterate(itr)))
-  {
-    double exact_element_error = computeElementExactError(
-        pumi_mesh, ent, nedelecField);
-    apf::setScalar(exactErrorField, ent, 0, exact_element_error);
-  }
-  pumi_mesh->end(itr);
-
-  // 18(c). Convert Lagrange Constant Fields to Nodal Fields
-  itr = pumi_mesh->begin(0);
-  while ((ent = pumi_mesh->iterate(itr)))
-  {
-    apf::Adjacent elements;
-    pumi_mesh->getAdjacent(ent, 3, elements);
-    int ne = (int) elements.getSize();
-
-    // (i). error nodal fields (exact, residual)
-    double exact_errors[ne];
-    double residual_errors[ne];
-    for (std::size_t i=0; i < ne; ++i){
-      exact_errors[i] = apf::getScalar(exactErrorField, elements[i], 0);
-      residual_errors[i] = apf::getScalar(residualErrorField, elements[i], 0);
-    }
-
-    double exact_average = 0.0;
-    double residual_average = 0.0;
-    for(int i = 0; i < ne; i++){
-      exact_average += exact_errors[i];
-      residual_average += residual_errors[i];
-    }
-    exact_average = exact_average/ne;
-    residual_average = residual_average/ne;
-
-    apf::setScalar(exactErrorNodalField, ent, 0, exact_average);
-    apf::setScalar(residualErrorNodalField, ent, 0, residual_average);
-
-    // (ii). solution nodal fields (exact, FEM)
-    apf::Vector3 exact_field_avg, exact_field;
-    exact_field_avg.zero();
-    for (std::size_t i=0; i < ne; ++i){
-      apf::getVector(E_exact_Field, elements[i], 0, exact_field);
-      exact_field_avg += exact_field;
-    }
-    exact_field_avg = exact_field_avg * (1./ne);
-    apf::setVector(E_exact_nodal_Field, ent, 0, exact_field_avg);
-
-
-    apf::Vector3 fem_field_avg, fem_field;
-    fem_field_avg.zero();
-    for (std::size_t i=0; i < ne; ++i){
-      apf::getVector(E_fem_Field, elements[i], 0, fem_field);
-      fem_field_avg += fem_field;
-    }
-    fem_field_avg = fem_field_avg * (1./ne);
-    apf::setVector(E_fem_nodal_Field, ent, 0, fem_field_avg);
-  }
-  cout << "Error Fields Written" << endl;
-
-
-
-  apf::Field* sizefield = em::getTargetEMSizeField(
-      nedelecField, residualErrorField, 0.25, 2.0, 2);
-  apf::writeVtkFiles("error_Fields_pumi", pumi_mesh);
-
-  // 17. Perform Mesh Adapt
-  int index = 0;
-  while (pumi_mesh->countFields() > 1)
-  {
-    apf::Field* f = pumi_mesh->getField(index);
-    if (f == sizefield) {
-       index++;
-       continue;
-    }
-    pumi_mesh->removeField(f);
-    apf::destroyField(f);
-  }
-  pumi_mesh->verify();
-
-  ma::Input* erinput = ma::configure(pumi_mesh, sizefield);
-  erinput->shouldFixShape = true;
-  erinput->maximumIterations = 10;
-  ma::adapt(erinput);
-  pumi_mesh->writeNative("after_adapt_pumi.smb");
+  apf::Field* residualErrorField = em::estimateError(electric_field);
+  pumi_mesh->writeNative("fichera_error_pumi.smb");
+  cout << "Error field computed" << endl;
 
 
   delete pcg;
@@ -441,65 +306,4 @@ void f_exact(const Vector &x, Vector &f)
       f(1) = (1. + kappa * kappa) * sin(kappa * x(0));
       if (x.Size() == 3) { f(2) = 0.0; }
    }
-}
-
-// TODO
-void pumiUserFunction(const apf::Vector3& x, apf::Vector3& f)
-{
-  if (dim == 3)
-  {
-      f[0] = (1. + kappa * kappa) * sin(kappa * x[1]);
-      f[1] = (1. + kappa * kappa) * sin(kappa * x[2]);
-      f[2] = (1. + kappa * kappa) * sin(kappa * x[0]);
-  }
-  else
-  {
-     f[0] = (1. + kappa * kappa) * sin(kappa * x[1]);
-     f[1] = (1. + kappa * kappa) * sin(kappa * x[0]);
-     f[2] = 0.0;
-  }
-}
-
-
-double computeElementExactError(apf::Mesh* mesh, apf::MeshEntity* e,
-  apf::Field* f)
-{
-  double error = 0.0;
-
-  apf::FieldShape* fs = f->getShape();
-  int type = mesh->getType(e);
-  PCU_ALWAYS_ASSERT(type == apf::Mesh::TET);
-  int nd = apf::countElementNodes(fs, type);
-  int dim = apf::getDimension(mesh, e);
-  double w;
-
-  apf::MeshElement* me = apf::createMeshElement(mesh, e);
-  apf::Element* el = apf::createElement(f, me);
-  int order = 2*fs->getOrder() + 1;
-  int np = apf::countIntPoints(me, order);
-
-  apf::Vector3 femsol, exsol;
-
-  apf::Vector3 p;
-  for (int i = 0; i < np; i++) {
-    apf::getIntPoint(me, order, i, p);
-    double weight = apf::getIntWeight(me, order, i);
-    apf::Matrix3x3 J;
-    apf::getJacobian(me, p, J);
-    double jdet = apf::getJacobianDeterminant(J, dim);
-    w = weight * jdet;
-
-    apf::getVector(el, p, femsol);
-
-    apf::Vector3 global;
-    apf::mapLocalToGlobal(me, p, global);
-    pumiUserFunction(global, exsol);
-    apf::Vector3 diff = exsol - femsol;
-
-    error += w * (diff * diff);
-  }
-  if (error < 0.0)
-    error = -error;
-
-  return sqrt(error);
 }
